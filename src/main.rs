@@ -1,6 +1,6 @@
 use rustsat::{
-    types::{Lit, Clause, Assignment, TernaryVal},
-    instances::SatInstance,
+    types::{Lit, Clause, Assignment},
+    instances::{SatInstance, ManageVars},
     solvers::Solve,
     encodings::CollectClauses,
     clause
@@ -11,41 +11,23 @@ use rustsat_glucose::core::Glucose;
 mod logic;
 use logic::*;
 
-trait Logic<T> {
-    fn eqs(self, x: T) -> Vec<Clause>;
-}
-
-trait GetBool {
-    fn get_bool(&self, lit: Lit) -> bool;
-}
-
-impl GetBool for Assignment {
-    fn get_bool(&self, lit: Lit) -> bool {
-        match self.lit_value(lit) {
-            TernaryVal::True => true,
-            TernaryVal::False => false,
-            TernaryVal::DontCare => panic!("Bad lit")
-        }
-    }
-}
-
-struct Math<'a, const LEN: usize> {
-    instance: &'a mut SatInstance,
+struct Math<'a, const LEN: usize, VM> {
+    vm: &'a mut VM,
     clauses: Vec<Clause>,
     x: Bin<LEN>,
 }
 
-impl<'a, const LEN: usize> Math<'a, LEN> {
-    fn new(instance: &'a mut SatInstance, x: Bin<LEN>) -> Self {
+impl<'a, const LEN: usize, VM: ManageVars> Math<'a, LEN, VM> {
+    fn new(vm: &'a mut VM, x: Bin<LEN>) -> Self {
         Math {
-            instance,
+            vm,
             clauses: Vec::new(),
             x
         }
     }
 
     fn rshift(mut self, output: Option<Bin<LEN>>) -> Self {
-        let out = output.unwrap_or_else(|| Bin::<LEN>::make(self.instance));
+        let out = output.unwrap_or_else(|| Bin::<LEN>::make(self.vm));
 
         for i in 1..LEN {
             self.clauses.extend(self.x.num[i].eqs(out.num[i-1]));
@@ -58,7 +40,7 @@ impl<'a, const LEN: usize> Math<'a, LEN> {
     }
 
     fn lshift(mut self, output: Option<Bin<LEN>>) -> Self { 
-        let out = output.unwrap_or_else(|| Bin::<LEN>::make(self.instance));
+        let out = output.unwrap_or_else(|| Bin::<LEN>::make(self.vm));
 
         for i in 1..LEN {
             self.clauses.extend(out.num[i].eqs(self.x.num[i-1]));
@@ -71,11 +53,11 @@ impl<'a, const LEN: usize> Math<'a, LEN> {
     }
 
     fn plus(mut self, y: Bin<LEN>, output: Option<Bin<LEN>>) -> Self {
-        let out = output.unwrap_or_else(|| Bin::<LEN>::make(self.instance));
+        let out = output.unwrap_or_else(|| Bin::<LEN>::make(self.vm));
 
         self.clauses.extend(xor(self.x.num[0], y.num[0], out.num[0]));
         
-        let mut carry = self.instance.new_lit();
+        let mut carry = self.vm.new_lit();
         self.clauses.extend(and(self.x.num[0], y.num[0], carry));
 
         for i in 1..LEN {
@@ -86,7 +68,7 @@ impl<'a, const LEN: usize> Math<'a, LEN> {
                 break;
             }
 
-            let c2 = self.instance.new_lit();
+            let c2 = self.vm.new_lit();
             self.clauses.extend(carry_out(self.x.num[i], y.num[i], carry, c2));
 
             carry = c2;
@@ -116,9 +98,9 @@ impl<const LEN: usize> Bin<LEN> {
 }
 
 impl<const LEN: usize> Generator<u64> for Bin<LEN> {
-    fn make(instance: &mut SatInstance) -> Self {
+    fn make<VM: ManageVars>(vm: &mut VM) -> Self {
         Bin {
-            num: std::array::from_fn(|_| instance.new_lit()),
+            num: std::array::from_fn(|_| vm.new_lit()),
         }
     }
 
@@ -158,6 +140,7 @@ fn and(a: Lit, b: Lit, y: Lit) -> Vec<Clause> {
     ]
 }
 
+// y = a and b or b and c or a and c
 fn carry_out(a: Lit, b: Lit, c: Lit, y: Lit) -> Vec<Clause> {
     vec![
         clause![!a, !b, y],
@@ -169,33 +152,27 @@ fn carry_out(a: Lit, b: Lit, c: Lit, y: Lit) -> Vec<Clause> {
     ]
 }
 
-impl Logic<Lit> for Lit {
-    fn eqs(self, x: Lit) -> Vec<Clause> {
-        vec![clause![!self, x], clause![self, !x]]
-    }   
-}
-
-const STEPS: usize = 984;
+const STEPS: usize = 20;
 
 fn main() {
     let mut instance = SatInstance::new();
 
-    let mut n = Bin::<128>::make(&mut instance);
-    n.as_eq(670617279, &mut instance);
-
-    let one = Bin::make(&mut instance);
+    let mut n = Bin::<32>::make(instance.var_manager_mut());
+    n.as_eq(12345, &mut instance);
+    
+    let one = Bin::make(instance.var_manager_mut());
     one.as_eq(1, &mut instance);
 
     for _ in 0..STEPS {
-        let n2 = Bin::make(&mut instance);
+        let n2 = Bin::make(instance.var_manager_mut());
 
-        let (clauses_odd, _) = Math::new(&mut instance, n)
+        let (clauses_odd, _) = Math::new(instance.var_manager_mut(), n)
             .lshift(None)
             .plus(n, None)
             .plus(one, Some(n2))
             .out();
 
-        let (clauses_even, _) = Math::new(&mut instance, n)
+        let (clauses_even, _) = Math::new(instance.var_manager_mut(), n)
             .rshift(Some(n2))
             .out();
 
@@ -217,7 +194,6 @@ fn main() {
 
     glucose.solve().unwrap();
     let assignment = glucose.full_solution().expect("No solution");
-    // println!("{:?}", assignment);
 
     let n = n.read_into(&assignment);
     println!("{}", n);

@@ -1,11 +1,11 @@
-
 use rustsat::{
-    types::{Lit, Assignment, TernaryVal},
-    instances::SatInstance
+    types::{Lit, Clause, Assignment, TernaryVal},
+    instances::ManageVars,
+    clause
 };
 
 pub trait Generator<T> {
-    fn make(instance: &mut SatInstance) -> Self;
+    fn make<VM: ManageVars>(vm: &mut VM) -> Self;
     fn read_into(self, assignment: &Assignment) -> T;
 }
 
@@ -24,8 +24,8 @@ impl GetBool for Assignment {
 }
 
 impl Generator<bool> for Lit {
-    fn make(instance: &mut SatInstance) -> Self {
-        instance.new_lit()
+    fn make<VM: ManageVars>(vm: &mut VM) -> Self {
+        vm.new_lit()
     }
 
     fn read_into(self, assignment: &Assignment) -> bool {
@@ -34,8 +34,8 @@ impl Generator<bool> for Lit {
 }
 
 impl<const LEN: usize, G, T: Generator<G>> Generator<[G; LEN]> for [T; LEN] {
-    fn make(instance: &mut SatInstance) -> Self {
-        std::array::from_fn(|_| Generator::make(instance))
+    fn make<VM: ManageVars>(vm: &mut VM) -> Self {
+        std::array::from_fn(|_| Generator::make(vm))
     }
 
     fn read_into(self, assignment: &Assignment) -> [G; LEN] {
@@ -43,3 +43,12 @@ impl<const LEN: usize, G, T: Generator<G>> Generator<[G; LEN]> for [T; LEN] {
     }
 }
 
+pub trait Logic<T> {
+    fn eqs(self, x: T) -> Vec<Clause>;
+}
+
+impl Logic<Lit> for Lit {
+    fn eqs(self, x: Lit) -> Vec<Clause> {
+        vec![clause![!self, x], clause![self, !x]]
+    }
+}
